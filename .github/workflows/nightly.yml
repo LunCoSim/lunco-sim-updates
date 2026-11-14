@@ -83,9 +83,9 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Verify nightly version generation
-        working-directory: source
+        working-directory: workflow-repo
         env:
-          LUNCO_NIGHTLY_WORKFLOW_PATH: ${{ github.workspace }}/workflow-repo/.github/workflows/nightly.yml
+          LUNCO_NIGHTLY_SOURCE_PATH: ${{ github.workspace }}/source
         run: python3 -m unittest scripts.tests.test_nightly_release_contract.NightlyReleaseContractTests.test_version_generation_rejects_failed_or_missing_metadata
 
       - name: Verify nightly MSI version sequence
@@ -142,7 +142,7 @@ jobs:
           base_version=$(jq -er '.packages[] | select(.name == "lunco-luncosim") | .version' <<< "$metadata")
           base_version="${base_version%-dev}"
           version="${base_version}-nightly.${RUN_NUMBER}.${RUN_ATTEMPT}"
-          msi_version=$(python3 scripts/msi_version.py "$RUN_NUMBER" "$RUN_ATTEMPT")
+          msi_version=$(python3 scripts/msi_version.py --version "$version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "msi_version=$msi_version" >> "$GITHUB_OUTPUT"
           echo "run_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
@@ -218,7 +218,7 @@ jobs:
 
       - name: Verify macOS packaging arguments
         if: matrix.platform == 'macos'
-        run: python3 -m unittest scripts.tests.test_nightly_release_contract.NightlyReleaseContractTests.test_velopack_arguments_support_empty_options_under_nounset
+        run: python3 -m unittest scripts.tests.test_dev_release_contract.DevReleaseContractTests.test_velopack_arguments_support_empty_options_under_nounset
 
       - name: Setup .NET for Velopack CLI
         uses: actions/setup-dotnet@v4
