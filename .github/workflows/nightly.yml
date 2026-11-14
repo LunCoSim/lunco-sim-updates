@@ -86,7 +86,7 @@ jobs:
         working-directory: workflow-repo
         env:
           LUNCO_NIGHTLY_SOURCE_PATH: ${{ github.workspace }}/source
-        run: python3 -m unittest scripts.tests.test_nightly_release_contract.NightlyReleaseContractTests.test_version_generation_rejects_failed_or_missing_metadata
+        run: python3 -m unittest scripts.tests.test_nightly_release_contract
 
       - name: Verify nightly MSI version sequence
         working-directory: source

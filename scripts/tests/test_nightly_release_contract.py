@@ -12,6 +12,22 @@ SOURCE_ROOT = Path(os.environ["LUNCO_NIGHTLY_SOURCE_PATH"])
 
 
 class NightlyReleaseContractTests(unittest.TestCase):
+    def test_next_run_cli_continues_the_published_nightly_sequence(self) -> None:
+        assets = [
+            "luncosim-0.6.0-nightly.135.2-win-x64-full.nupkg",
+            "LunCoSim-win-x64-0.6.0-nightly.151.1-full.nupkg",
+            "luncosim-0.6.0-dev.3-win-x64-full.nupkg",
+        ]
+        result = subprocess.run(
+            ["python3", "scripts/msi_version.py", "--next-run"],
+            cwd=SOURCE_ROOT,
+            input="\n".join(assets),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "152\n")
+
     def test_version_generation_rejects_failed_or_missing_metadata(self) -> None:
         workflow = (ROOT / ".github/workflows/nightly.yml").read_text(encoding="utf-8")
         step = workflow.split("      - id: version\n", 1)[1]
