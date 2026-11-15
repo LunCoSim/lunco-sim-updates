@@ -12,6 +12,14 @@ SOURCE_ROOT = Path(os.environ["LUNCO_NIGHTLY_SOURCE_PATH"])
 
 
 class NightlyReleaseContractTests(unittest.TestCase):
+    def test_release_staging_uses_the_source_helper(self) -> None:
+        workflow = (ROOT / ".github/workflows/nightly.yml").read_text(encoding="utf-8")
+        helper = SOURCE_ROOT / "scripts/stage_dev_release.py"
+
+        self.assertTrue(helper.is_file(), f"missing release staging helper: {helper}")
+        self.assertIn("python3 scripts/stage_dev_release.py", workflow)
+        self.assertNotIn("stage_nightly_release.py", workflow)
+
     def test_next_run_cli_continues_the_published_nightly_sequence(self) -> None:
         assets = [
             "luncosim-0.6.0-nightly.135.2-win-x64-full.nupkg",
