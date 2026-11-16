@@ -61,7 +61,6 @@ jobs:
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       version: ${{ steps.version.outputs.version }}
       msi_version: ${{ steps.version.outputs.msi_version }}
-      run_number: ${{ steps.sequence.outputs.run_number }}
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - name: Check out this workflow revision
@@ -96,17 +95,6 @@ jobs:
         working-directory: source
         run: python3 -m unittest scripts.tests.test_asset_bundle_contract
 
-      - id: sequence
-        name: Continue the existing nightly version sequence
-        working-directory: source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          asset_names=$(gh api --paginate \
-            "repos/LunCoSim/lunco-sim-updates/releases?per_page=100" \
-            --jq '.[] | .assets[]?.name')
-          run_number=$(printf '%s\n' "$asset_names" | python3 scripts/msi_version.py --next-run)
-          echo "run_number=$run_number" >> "$GITHUB_OUTPUT"
       - id: metadata
         env:
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
@@ -131,21 +119,23 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Preparing nightly release: $release_tag ($timestamp)"
       - id: version
-        env:
-          RUN_NUMBER: ${{ steps.sequence.outputs.run_number }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           # The app crate owns the product base version. Strip only its
           # development marker; do not rewrite Cargo.toml in CI.
           metadata=$(cargo metadata --locked --no-deps --format-version 1)
           base_version=$(jq -er '.packages[] | select(.name == "lunco-luncosim") | .version' <<< "$metadata")
           base_version="${base_version%-dev}"
-          version="${base_version}-nightly.${RUN_NUMBER}.${RUN_ATTEMPT}"
+          published_assets=$(gh api --paginate \
+            "repos/LunCoSim/lunco-sim-updates/releases?per_page=100" \
+            --jq '.[] | select(.draft == false) | .assets[].name')
+          version=$(python3 scripts/msi_version.py --next-version "$base_version" <<< "$published_assets")
+          python3 scripts/msi_version.py --check-published "$version" <<< "$published_assets"
           msi_version=$(python3 scripts/msi_version.py --version "$version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "msi_version=$msi_version" >> "$GITHUB_OUTPUT"
-          echo "run_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
 
   # ── Build LunCoSim per OS ────────────────────────────────────────────────
   build:
