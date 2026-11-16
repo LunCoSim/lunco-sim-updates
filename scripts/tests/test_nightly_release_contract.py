@@ -68,6 +68,13 @@ class NightlyReleaseContractTests(unittest.TestCase):
                         '#!/bin/sh\nprintf "%s\\n" "$TEST_PUBLISHED_ASSETS"\n'
                     )
                     gh.chmod(0o755)
+                    expected_msi = subprocess.run(
+                        ["python3", "scripts/msi_version.py", "--version", "0.1.0-dev.2"],
+                        cwd=SOURCE_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    ).stdout.strip()
                     output = root / "output"
                     env = dict(
                         os.environ,
@@ -89,7 +96,7 @@ class NightlyReleaseContractTests(unittest.TestCase):
                         self.assertEqual(
                             output.read_text(),
                             "version=0.1.0-dev.2\n"
-                            "msi_version=1.1.2\n",
+                            f"msi_version={expected_msi}\n",
                         )
                     else:
                         self.assertFalse(output.exists())
