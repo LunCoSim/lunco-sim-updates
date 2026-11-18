@@ -63,6 +63,7 @@ jobs:
       msi_version: ${{ steps.version.outputs.msi_version }}
       run_number: ${{ steps.sequence.outputs.run_number }}
       source_sha: ${{ steps.source.outputs.sha }}
+      release_notes: ${{ steps.release_notes.outputs.body }}
     steps:
       - name: Check out this workflow revision
         uses: actions/checkout@v4
@@ -82,7 +83,7 @@ jobs:
         working-directory: source
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Verify nightly version generation
+      - name: Verify the nightly release contract
         working-directory: workflow-repo
         env:
           LUNCO_NIGHTLY_SOURCE_PATH: ${{ github.workspace }}/source
@@ -146,6 +147,54 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "msi_version=$msi_version" >> "$GITHUB_OUTPUT"
           echo "run_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare nightly release notes
+        id: release_notes
+        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.make_release)
+        working-directory: source
+        env:
+          RELEASE_DATE: ${{ steps.metadata.outputs.date }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_REPOSITORY_URL: https://github.com/LunCoSim/lunco-sim
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous_release_body=$(gh api \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq 'map(select(.draft == false and (.tag_name | startswith("nightly-")))) | max_by(.published_at) | .body // ""')
+          previous_source_sha=$(python3 -c 'import re,sys; m=re.search(r"^Source commit:.*?/commit/([0-9a-f]{40})\)", sys.stdin.read(), re.M); print(m.group(1) if m else "")' <<< "$previous_release_body")
+          if [ -z "$previous_source_sha" ] || ! git cat-file -e "$previous_source_sha^{commit}"; then
+            echo "The previous published nightly has no valid LunCoSim source commit." >&2
+            exit 1
+          fi
+
+          cat >> "$GITHUB_OUTPUT" <<EOF
+          body<<NIGHTLY_RELEASE_NOTES
+          # LunCoSim nightly — $RELEASE_DATE
+
+          **Windows x86_64 build is unsigned.** If SmartScreen says “Windows protected your PC,” click **More info**, then **Run anyway** to continue installing.
+
+          Download and install the file for your computer:
+
+          - **Windows x86_64:** \`LunCoSim-Windows-x86_64.msi\`
+          - **macOS Apple Silicon:** \`LunCoSim-macOS-Apple-Silicon.pkg\`
+          - **macOS Intel:** \`LunCoSim-macOS-Intel.pkg\`
+          - **Linux x86_64:** \`LunCoSim-Linux-x86_64.AppImage\` — make it executable, then open it.
+
+          LunCoSim includes an autoupdater that checks for and can download the latest nightly build.
+
+          Install and open LunCoSim, then open your favorite AI agent and paste:
+
+          \`\`\`text
+          Find the installed LunCoSim application and read its bundled documentation, skills, and examples before doing anything. Ask me what mission I want, then use those resources to build and validate the mission in LunCoSim. Create the mission files and explain how to run them.
+          \`\`\`
+
+          View the [changelog]($SOURCE_REPOSITORY_URL/compare/$previous_source_sha...$SOURCE_SHA).
+
+          These nightly builds are development builds intended for testing.
+
+          Source commit: [$SOURCE_SHA]($SOURCE_REPOSITORY_URL/commit/$SOURCE_SHA)
+          NIGHTLY_RELEASE_NOTES
+          EOF
 
   # ── Build LunCoSim per OS ────────────────────────────────────────────────
   build:
@@ -525,8 +574,7 @@ jobs:
           RELEASE_DATE: ${{ needs.meta.outputs.date }}
           RELEASE_TAG: ${{ needs.meta.outputs.release_tag }}
           RELEASE_VERSION: ${{ needs.meta.outputs.version }}
-          SOURCE_SHA: ${{ needs.meta.outputs.source_sha }}
-          SOURCE_REPOSITORY_URL: https://github.com/LunCoSim/lunco-sim
+          RELEASE_NOTES: ${{ needs.meta.outputs.release_notes }}
           GH_TOKEN: ${{ github.token }}
           UPDATES_REPOSITORY: LunCoSim/lunco-sim-updates
         run: |
@@ -549,29 +597,10 @@ jobs:
             --jq '.[] | .assets[]?.name' |
             python3 scripts/msi_version.py --check-published "$RELEASE_VERSION"
 
-          # The updater repository stores release records. Read the source SHA
-          # from the previous nightly, falling back to the latest old main-repo
-          # nightly tag for the first run after this workflow moves.
-          latest_release_body=$(gh api \
-            "repos/$UPDATES_REPOSITORY/releases?per_page=100" \
-            --jq 'map(select(.draft == false)) | sort_by(.created_at) | last | .body // ""')
-          previous_source_sha=$(python3 -c 'import re,sys; m=re.search(r"Source commit:.*?/commit/([0-9a-f]{40})", sys.stdin.read()); print(m.group(1) if m else "")' <<< "$latest_release_body")
-          if [ -z "$previous_source_sha" ]; then
-            previous_nightly_tag=$(git tag --list 'nightly-????????T??????Z' --sort=-refname | head -n 1)
-            if [ -z "$previous_nightly_tag" ]; then
-              echo "No previous nightly source commit is available." >&2
-              exit 1
-            fi
-            previous_source_sha=$(git rev-parse "$previous_nightly_tag^{commit}")
+          if [ -z "$RELEASE_NOTES" ]; then
+            echo "The meta job did not provide nightly release notes." >&2
+            exit 1
           fi
-
-          python3 skills/nightly-changelog/scripts/generate_changelog.py \
-            --from-ref "$previous_source_sha" \
-            --to-ref "$SOURCE_SHA" \
-            --release-date "$RELEASE_DATE" \
-            --format release-notes \
-            --repo-url "$SOURCE_REPOSITORY_URL" \
-            --output release_notes.md
 
           if gh release view "$RELEASE_TAG" --repo "$UPDATES_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $UPDATES_REPOSITORY@$RELEASE_TAG already exists; refusing to replace it." >&2
@@ -592,11 +621,7 @@ jobs:
             exit 1
           fi
 
-          cat > update_notes.md <<EOF
-          $(cat release_notes.md)
-
-          Source commit: [$SOURCE_SHA]($SOURCE_REPOSITORY_URL/commit/$SOURCE_SHA)
-          EOF
+          printf '%s\n' "$RELEASE_NOTES" > update_notes.md
 
           gh release create "$RELEASE_TAG" \
             --repo "$UPDATES_REPOSITORY" \
