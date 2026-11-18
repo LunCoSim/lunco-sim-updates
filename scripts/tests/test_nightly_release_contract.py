@@ -108,15 +108,18 @@ class NightlyReleaseContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "152\n")
 
-    def test_version_generation_rejects_failed_or_missing_metadata(self) -> None:
+    def test_version_preflight_checks_metadata_and_published_versions(self) -> None:
         script = workflow_run_block("id: version")
+        app = [{"name": "lunco-luncosim", "version": "0.1.0-dev"}]
+        releases = "luncosim-0.1.0-nightly.138.1-win-x64-full.nupkg"
         cases = [
-            (0, [{"name": "lunco-luncosim", "version": "0.1.0-dev"}], True),
-            (101, [], False),
-            (0, [], False),
+            (0, app, releases, True),
+            (0, app, releases + "\nluncosim-0.1.0-win-x64-full.nupkg", False),
+            (101, [], releases, False),
+            (0, [], releases, False),
         ]
-        for cargo_status, packages, succeeds in cases:
-            with self.subTest(cargo_status=cargo_status, packages=packages):
+        for cargo_status, packages, assets, succeeds in cases:
+            with self.subTest(cargo_status=cargo_status, packages=packages, assets=assets):
                 with tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
                     cargo = root / "cargo"
@@ -125,14 +128,18 @@ class NightlyReleaseContractTests(unittest.TestCase):
                         'exit "$TEST_CARGO_STATUS"\n'
                     )
                     cargo.chmod(0o755)
+                    gh = root / "gh"
+                    gh.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_ASSETS"\n')
+                    gh.chmod(0o755)
                     output = root / "output"
                     env = dict(
                         os.environ,
                         PATH=f"{root}:{os.environ['PATH']}",
                         TEST_METADATA=json.dumps({"packages": packages}),
                         TEST_CARGO_STATUS=str(cargo_status),
+                            TEST_ASSETS=assets,
                         GITHUB_OUTPUT=str(output),
-                        RUN_NUMBER="139",
+                            GITHUB_REPOSITORY="LunCoSim/lunco-sim-updates",
                         RUN_ATTEMPT="1",
                     )
                     result = subprocess.run(
@@ -147,8 +154,7 @@ class NightlyReleaseContractTests(unittest.TestCase):
                         self.assertEqual(
                             output.read_text(),
                             "version=0.1.0-nightly.139.1\n"
-                            "msi_version=1.0.13901\n"
-                            "run_number=139\n",
+                            "msi_version=1.0.13901\n",
                         )
                     else:
                         self.assertFalse(output.exists())

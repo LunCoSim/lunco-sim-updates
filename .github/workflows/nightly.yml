@@ -26,6 +26,10 @@ on:
     - cron: '0 22 * * *'
   workflow_dispatch:
     inputs:
+      preflight_only:
+        description: 'Check release notes, versions, and staging without building or publishing'
+        type: boolean
+        default: false
       make_release:
         description: 'Create a GitHub release with the artifacts'
         type: boolean
@@ -61,7 +65,6 @@ jobs:
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       version: ${{ steps.version.outputs.version }}
       msi_version: ${{ steps.version.outputs.msi_version }}
-      run_number: ${{ steps.sequence.outputs.run_number }}
       source_sha: ${{ steps.source.outputs.sha }}
       release_notes: ${{ steps.release_notes.outputs.body }}
     steps:
@@ -89,25 +92,14 @@ jobs:
           LUNCO_NIGHTLY_SOURCE_PATH: ${{ github.workspace }}/source
         run: python3 -m unittest scripts.tests.test_nightly_release_contract
 
-      - name: Verify nightly MSI version sequence
+      - name: Verify release versions and artifact staging
         working-directory: source
-        run: python3 -m unittest scripts.tests.test_msi_version
+        run: python3 -m unittest scripts.tests.test_msi_version scripts.tests.test_stage_release_artifacts
 
       - name: Verify runtime font bundle targets
         working-directory: source
         run: python3 -m unittest scripts.tests.test_asset_bundle_contract
 
-      - id: sequence
-        name: Continue the existing nightly version sequence
-        working-directory: source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          asset_names=$(gh api --paginate \
-            "repos/LunCoSim/lunco-sim-updates/releases?per_page=100" \
-            --jq '.[] | .assets[]?.name')
-          run_number=$(printf '%s\n' "$asset_names" | python3 scripts/msi_version.py --next-run)
-          echo "run_number=$run_number" >> "$GITHUB_OUTPUT"
       - id: metadata
         env:
           RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
@@ -132,9 +124,10 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Preparing nightly release: $release_tag ($timestamp)"
       - id: version
+        name: Check the next nightly version against GitHub releases
         env:
-          RUN_NUMBER: ${{ steps.sequence.outputs.run_number }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
         working-directory: source
         run: |
           # The app crate owns the product base version. Strip only its
@@ -142,15 +135,20 @@ jobs:
           metadata=$(cargo metadata --locked --no-deps --format-version 1)
           base_version=$(jq -er '.packages[] | select(.name == "lunco-luncosim") | .version' <<< "$metadata")
           base_version="${base_version%-dev}"
-          version="${base_version}-nightly.${RUN_NUMBER}.${RUN_ATTEMPT}"
+          asset_names=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | .assets[]?.name')
+          run_number=$(python3 scripts/msi_version.py --next-run <<< "$asset_names")
+          version="${base_version}-nightly.${run_number}.${RUN_ATTEMPT}"
+          python3 scripts/msi_version.py --check-published "$version" <<< "$asset_names"
           msi_version=$(python3 scripts/msi_version.py --version "$version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "msi_version=$msi_version" >> "$GITHUB_OUTPUT"
-          echo "run_number=$RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Nightly app version $version maps to Windows MSI $msi_version."
 
       - name: Prepare nightly release notes
         id: release_notes
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.make_release)
+        if: github.event_name == 'schedule' || inputs.make_release || inputs.preflight_only
         working-directory: source
         env:
           RELEASE_DATE: ${{ steps.metadata.outputs.date }}
@@ -199,6 +197,7 @@ jobs:
   # ── Build LunCoSim per OS ────────────────────────────────────────────────
   build:
     needs: meta
+    if: github.event_name == 'schedule' || !inputs.preflight_only
     name: ${{ matrix.label }}
     strategy:
       fail-fast: false
@@ -535,8 +534,7 @@ jobs:
   release:
     needs: [meta, build]
     runs-on: ubuntu-latest
-    # Only create a release if the user opted in (default true for
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.make_release)
+    if: github.event_name == 'schedule' || (inputs.make_release && !inputs.preflight_only)
     defaults:
       run:
         shell: bash
@@ -623,20 +621,12 @@ jobs:
 
           printf '%s\n' "$RELEASE_NOTES" > update_notes.md
 
+          # GitHub CLI uploads the complete asset set to a draft before publishing.
           gh release create "$RELEASE_TAG" \
+            "${update_packages[@]}" "${update_feeds[@]}" "${release_assets[@]}" \
             --repo "$UPDATES_REPOSITORY" \
-            --target main \
+            --target "$GITHUB_SHA" \
             --title "Nightly $RELEASE_DATE" \
             --notes-file update_notes.md \
-            --draft
-
-          # Publish versioned packages and feeds together with the four installers.
-          gh release upload "$RELEASE_TAG" \
-            --repo "$UPDATES_REPOSITORY" \
-            "${update_packages[@]}" "${update_feeds[@]}" "${release_assets[@]}"
-
-          gh release edit "$RELEASE_TAG" \
-            --repo "$UPDATES_REPOSITORY" \
-            --draft=false \
             --prerelease \
             --latest=false
